@@ -495,6 +495,32 @@ impl Config {
             .instrument(|a: &SocketAddr| info_span!("tcp", dst = %a))
             .push_map_target(|a: listen::Addrs| a.target_addr());
 
+        // Load balances TCP streams that cannot be decoded as HTTP.
+        let tcp_balance = svc::stack(tcp::Connector::new(tcp_connect))
+            .push(admit::AdmitLayer::new(prevent_loop))
+            .check_make_service::<TcpEndpoint, ()>()
+            .push(discover::resolve(map_endpoint::Resolve::new(
+                endpoint::FromMetadata,
+                resolve,
+            )))
+            .push(discover::buffer(1_000, cache_max_idle_age))
+            .push_on_response(svc::layers().push(tcp::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY)))
+            .into_new_service()
+            .check_new_service::<Addr, ()>()
+            .cache(
+                svc::layers().push_on_response(
+                    svc::layers()
+                        .push_failfast(dispatch_timeout)
+                        .push_spawn_buffer_with_idle_timeout(buffer_capacity, cache_max_idle_age)
+                        .push(metrics.stack.layer(stack_labels("tcp.balance"))),
+                ),
+            )
+            .spawn_buffer(buffer_capacity)
+            .check_make_service::<Addr, ()>()
+            .push(svc::layer::mk(tcp::Forward::new))
+            .push_map_target(|a: listen::Addrs| Addr::from(a.target_addr()))
+            .push_fallback_with_predicate(tcp_forward.clone().into_inner(), is_discovery_rejected);
+
         let http = http::DetectHttp::new(
             h2_settings,
             detect_protocol_timeout,
