@@ -496,7 +496,8 @@ impl Config {
             .push_map_target(|a: listen::Addrs| a.target_addr());
 
         // Load balances TCP streams that cannot be decoded as HTTP.
-        let _tcp_balance = svc::stack(tcp::Connector::new(tcp_connect))
+        let _tcp_balance = svc::stack(tcp_connect)
+            .push_make_thunk()
             .push(admit::AdmitLayer::new(prevent_loop))
             .check_make_service::<TcpEndpoint, ()>()
             .push(discover::resolve(map_endpoint::Resolve::new(

@@ -3,5 +3,4 @@
 pub mod balance;
 pub mod forward;
 
-pub use self::connector::Connector;
 pub use self::forward::Forward;
