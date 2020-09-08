@@ -496,7 +496,7 @@ impl Config {
             .push_map_target(|a: listen::Addrs| a.target_addr());
 
         // Load balances TCP streams that cannot be decoded as HTTP.
-        let tcp_balance = svc::stack(tcp_connect)
+        let tcp_balance = svc::stack(tcp_connect.clone())
             .push_make_thunk()
             .push(admit::AdmitLayer::new(prevent_loop))
             .check_make_service::<TcpEndpoint, ()>()
@@ -505,9 +505,17 @@ impl Config {
                 resolve,
             )))
             .push(discover::buffer(1_000, cache_max_idle_age))
+            .push_map_target(Addr::from)
             .push_on_response(tcp::balance::layer(EWMA_DEFAULT_RTT, EWMA_DECAY))
+            .push_fallback_with_predicate(
+                svc::stack(tcp_connect.clone())
+                    .push_make_thunk()
+                    .push(admit::AdmitLayer::new(prevent_loop))
+                    .push_map_target(TcpEndpoint::from),
+                is_discovery_rejected,
+            )
             .into_new_service()
-            .check_new_service::<Addr, ()>()
+            .check_new_service::<SocketAddr, ()>()
             .cache(
                 svc::layers().push_on_response(
                     svc::layers()
@@ -517,10 +525,9 @@ impl Config {
                 ),
             )
             .spawn_buffer(buffer_capacity)
-            .check_make_service::<Addr, ()>()
+            .check_make_service::<SocketAddr, ()>()
             .push(svc::layer::mk(tcp::Forward::new))
-            .push_map_target(|a: listen::Addrs| Addr::from(a.target_addr()))
-            .push_fallback_with_predicate(tcp_forward.clone(), is_discovery_rejected);
+            .push_map_target(|a: listen::Addrs| a.target_addr());
 
         let http = http::DetectHttp::new(
             h2_settings,
